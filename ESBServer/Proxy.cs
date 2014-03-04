@@ -40,6 +40,23 @@ namespace ESBServer
             handshakeServer = new HandshakeServer(7002, 7001, (ip, port, targetGuid) =>
             {
                 Console.Out.WriteLine("New client requests my port from IP {0}, his port is {1}, guid: {2}", ip, port, targetGuid);
+
+                var connectString = String.Format("tcp://{0}:{1}", ip, port);
+                var toKill = new List<string>();
+                foreach (var s in subscribers)
+                {
+                    if (s.Value.connectionString == connectString)
+                    {
+                        Console.Out.WriteLine("Kill subscriber {0} because he have a same connection string: {1}, probably old one is dead...", s.Key, connectString);
+                        toKill.Add(s.Key);
+                    }
+                }
+                foreach (var g in toKill)
+                {
+                    int totalRemovedMethods = KillSubscriber(g);
+                    Console.Out.WriteLine("removed {0} methods from registry", totalRemovedMethods);
+                }
+
                 var sub = new Subscriber(guid, targetGuid, String.Format("tcp://{0}:{1}", ip, port));
                 subscribers.Add(targetGuid, sub);
             });
@@ -249,55 +266,6 @@ namespace ESBServer
                 guid_to = cmdReq.guid_from
             };
             publisher.Publish(cmdReq.source_proxy_guid, respMsg);
-        }
-
-        void NodeHello(Message cmdReq)
-        {
-            try
-            {
-                var payload = System.Text.Encoding.UTF8.GetString(cmdReq.payload);
-                Console.Out.WriteLine("Got NODE_HELLO: {0}", payload);
-                //guid#connectStr
-                var t = payload.Split('#');
-                var targetGuid = t[0];
-                var connectString = t[1];
-
-                var toKill = new List<string>();
-                foreach (var s in subscribers)
-                {
-                    if (s.Value.connectionString == connectString)
-                    {
-                        Console.Out.WriteLine("Kill subscriber {0} because he have a same connection string: {1}, probably old one is dead...", s.Key, connectString);
-                        toKill.Add(s.Key);
-                    }
-                }
-                foreach (var g in toKill)
-                {
-                    int totalRemovedMethods = KillSubscriber(g);
-                    Console.Out.WriteLine("removed {0} methods from registry", totalRemovedMethods);
-                }
-
-                var subsciber = new Subscriber(guid, targetGuid, connectString);
-                subscribers[targetGuid] = subsciber;
-                var respMsg = new Message
-                {
-                    cmd = Message.Cmd.RESPONSE,
-                    payload = StringToByteArray(String.Format("{0}#{1}", publisher.host, publisher.port)),
-                    source_proxy_guid = guid
-                };
-                //responder.SendResponse(respMsg);
-            }
-            catch (Exception e)
-            {
-                Console.Out.WriteLine("Something bad happen on NodeHello: {0}", e.ToString());
-                var respMsg = new Message
-                {
-                    cmd = Message.Cmd.ERROR,
-                    payload = StringToByteArray(e.ToString()),
-                    source_proxy_guid = guid
-                };
-                //responder.SendResponse(respMsg);
-            }
         }
 
         public static string GetFQDN()
