@@ -10,6 +10,7 @@ namespace ESBServer
 {
     public class Subscriber : IDisposable
     {
+        private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         public string connectionString { get; internal set; }
         public string host { get; internal set; }
         public int port { get; internal set; }
@@ -37,24 +38,24 @@ namespace ESBServer
 
             ctx = ZmqContext.Create();
             socket = ctx.CreateSocket(SocketType.SUB);
-            Console.Out.WriteLine("Subscriber connecting to: `{0}`", connectionString);
+            log.InfoFormat("Subscriber connecting to: `{0}`", connectionString);
             socket.Subscribe(Proxy.StringToByteArray(guid));
             socket.Connect(connectionString);
             socket.ReceiveHighWatermark = 1000000;
             socket.ReceiveBufferSize = 512 * 1024;
 
             lastActiveTime = Proxy.Unixtimestamp();
-            Console.Out.WriteLine("Connected successfuly to: `{0}` `{1}`", connectionString, targetGuid);
+            log.InfoFormat("Connected successfuly to: `{0}` `{1}`", connectionString, targetGuid);
         }
 
         public void Subscribe(string channel)
         {
             if (subscribeChannels.Contains(channel))
             {
-                Console.Out.WriteLine("Subscriber {0} already subscribed on `{1}`", targetGuid, channel);
+                log.InfoFormat("Subscriber {0} already subscribed on `{1}`", targetGuid, channel);
                 return;
             }
-            Console.Out.WriteLine("Subscriber {0} subscribe on `{1}`", targetGuid, channel);
+            log.InfoFormat("Subscriber {0} subscribe on `{1}`", targetGuid, channel);
             subscribeChannels.Add(channel);
             socket.Subscribe(Proxy.StringToByteArray(channel));
         }
@@ -65,14 +66,14 @@ namespace ESBServer
             {
                 return;
             }
-            Console.Out.WriteLine("Subscriber {0} unsubscribe on `{1}`", targetGuid, channel);
+            log.InfoFormat("Subscriber {0} unsubscribe on `{1}`", targetGuid, channel);
             subscribeChannels.Remove(channel);
             socket.Unsubscribe(Proxy.StringToByteArray(channel));
         }
 
         public void Dispose()
         {
-            Console.Out.WriteLine("The end of life for subscriber `{0}` `{1}`", connectionString, targetGuid);
+            log.InfoFormat("The end of life for subscriber `{0}` `{1}`", connectionString, targetGuid);
             socket.Close();
             ctx.Terminate();
         }

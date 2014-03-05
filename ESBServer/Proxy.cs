@@ -6,12 +6,13 @@ using System.Text;
 using System.Threading;
 using ProtoBuf;
 using ServiceStack.Redis;
-
+using log4net;
 
 namespace ESBServer
 {
     public class Proxy
     {
+        private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         bool isWork = false;
         string guid;
         Publisher publisher;
@@ -29,7 +30,7 @@ namespace ESBServer
         {
             random = new Random(BitConverter.ToInt32(Guid.NewGuid().ToByteArray(), 0));
             guid = GenGuid();
-            Console.Out.WriteLine("New ESBServer {0}", guid);
+            log.InfoFormat("New ESBServer {0}", guid);
 
             subscribeChannels = new Dictionary<string, int>();
             nodeSubscribeChannels = new Dictionary<string, List<string>>();
@@ -51,7 +52,7 @@ namespace ESBServer
                     publisher = new Publisher(guid, GetFQDN(), publisherPort);
                     handshakeServer = new HandshakeServer(publisherPort+1, publisherPort, (ip, port, targetGuid) =>
                     {
-                        Console.Out.WriteLine("New client requests my port from IP {0}, his port is {1}, guid: {2}", ip, port, targetGuid);
+                        log.InfoFormat("New client requests my port from IP {0}, his port is {1}, guid: {2}", ip, port, targetGuid);
 
                         var connectString = String.Format("tcp://{0}:{1}", ip, port);
                         var toKill = new List<string>();
@@ -59,14 +60,14 @@ namespace ESBServer
                         {
                             if (s.Value.connectionString == connectString)
                             {
-                                Console.Out.WriteLine("Kill subscriber {0} because he have a same connection string: {1}, probably old one is dead...", s.Key, connectString);
+                                log.InfoFormat("Kill subscriber {0} because he have a same connection string: {1}, probably old one is dead...", s.Key, connectString);
                                 toKill.Add(s.Key);
                             }
                         }
                         foreach (var g in toKill)
                         {
                             int totalRemovedMethods = KillSubscriber(g);
-                            Console.Out.WriteLine("removed {0} methods from registry", totalRemovedMethods);
+                            log.InfoFormat("removed {0} methods from registry", totalRemovedMethods);
                         }
 
                         var sub = new Subscriber(guid, targetGuid, ip, port);
@@ -81,7 +82,7 @@ namespace ESBServer
                 }
                 catch (Exception e)
                 {
-                    Console.Out.WriteLine("Bind on port {0} failed: {1}", publisherPort, e.ToString());
+                    log.WarnFormat("Bind on port {0} failed: {1}", publisherPort, e.ToString());
                     publisherPort += 2;
                     if (i == 10)
                     {
@@ -112,6 +113,7 @@ namespace ESBServer
                         {
                             var msg = subscriber.Poll();
                             if (msg == null) break;
+                            if (log.IsDebugEnabled) log.DebugFormat("Got message from subscriber `{0}`, type: `{1}`, identifier: `{2}`, payload: `{3}`", subscriber.targetGuid, msg.cmd, msg.identifier, ByteArrayToString(msg.payload));
                             switch (msg.cmd)
                             {
                                 case Message.Cmd.PING:
@@ -136,13 +138,14 @@ namespace ESBServer
                                     Response(msg);
                                     break;
                                 default:
-                                    Console.Out.WriteLine("Unknown command received, cmd payload: {0}", ByteArrayToString(msg.payload));
+                                    log.ErrorFormat("Unknown command received, cmd payload: {0}", ByteArrayToString(msg.payload));
                                     throw new Exception("Unknown command received");
                             }
                         }
                         if (time - subscriber.lastPingTime > 1)
                         {
                             //Send ping
+                            if (log.IsDebugEnabled) log.DebugFormat("Send Ping to subscriber {0}", subscriber.targetGuid);
                             subscriber.lastPingTime = Unixtimestamp();
                             SendPing(subscriber.targetGuid);
                         }
@@ -156,7 +159,7 @@ namespace ESBServer
                     foreach (var guid in listOfDeadSubscribers)
                     {
                         int totalRemovedMethods = KillSubscriber(guid);
-                        Console.Out.WriteLine("Removed {0} methods from registry of dead node {1}", totalRemovedMethods, guid);
+                        log.InfoFormat("Removed {0} methods from registry of dead node {1}", totalRemovedMethods, guid);
                     }
 
                     if ((DateTime.Now - lastRedisUpdate).TotalSeconds >= 3)
@@ -169,7 +172,7 @@ namespace ESBServer
                 }
                 catch (Exception e)
                 {
-                    Console.Out.WriteLine("Exception in MainLoop: {0}", e.ToString());
+                    log.ErrorFormat("Exception in MainLoop: {0}", e.ToString());
                     Thread.Sleep(10);
                 }
             }
@@ -177,8 +180,8 @@ namespace ESBServer
 
         void Publish(Message msg)
         {
+            if (log.IsDebugEnabled) log.DebugFormat("Publish()");
             if (msg.recursion > 0) return;
-            Console.Out.WriteLine("publish... `{0}`", msg.identifier);
             msg.source_proxy_guid = guid;
             msg.recursion = 1;
             publisher.Publish(msg.identifier, msg);
@@ -186,6 +189,7 @@ namespace ESBServer
 
         void Subscribe(Message msg)
         {
+            if (log.IsDebugEnabled) log.DebugFormat("Subscribe()");
             if (!subscribeChannels.ContainsKey(msg.identifier))
             {
                 subscribeChannels[msg.identifier] = 1;
@@ -199,11 +203,13 @@ namespace ESBServer
             {
                 nodeSubscribeChannels[msg.source_proxy_guid] = new List<string>();
             }
+
             if (!nodeSubscribeChannels[msg.source_proxy_guid].Contains(msg.identifier))
             {
                 nodeSubscribeChannels[msg.source_proxy_guid].Add(msg.identifier);
             }
-            Console.Out.WriteLine("Subscribe... `{0}`, on this channel we have {1} subscribers", msg.identifier, subscribeChannels[msg.identifier]);
+
+            log.InfoFormat("Subscribe... `{0}`, on this channel we have {1} subscribers", msg.identifier, subscribeChannels[msg.identifier]);
             foreach (var v in subscribers)
             {
                 var sub = v.Value;
@@ -213,6 +219,7 @@ namespace ESBServer
 
         int KillSubscriber(string targetGuid)
         {
+            if (log.IsDebugEnabled) log.DebugFormat("KillSubscriber()");
             var sub = subscribers[targetGuid];
 
             if (proxyGuids.Contains(targetGuid))
@@ -232,7 +239,7 @@ namespace ESBServer
                 {
                     if (m.Value.proxyGuid == targetGuid)
                     {
-                        Console.Out.WriteLine("Remove method `{0}` with guid {1}", m.Value.identifier, m.Key);
+                        log.InfoFormat("Remove method `{0}` with guid {1}", m.Value.identifier, m.Key);
                         toRemove.Add(m.Key);
                     }
                 }
@@ -248,7 +255,7 @@ namespace ESBServer
                 foreach (var channel in nodeSubscribeChannels[targetGuid])
                 {
                     subscribeChannels[channel]--;
-                    Console.Out.WriteLine("On channel {0} we have {1} refs", channel, subscribeChannels[channel]);
+                    log.InfoFormat("On channel {0} we have {1} refs", channel, subscribeChannels[channel]);
                     if (subscribeChannels[channel] <= 0)
                     {
                         foreach (var s in subscribers)
@@ -266,13 +273,14 @@ namespace ESBServer
 
         void RegisterInvoke(Message cmdReq)
         {
+            if (log.IsDebugEnabled) log.DebugFormat("RegisterInvoke()");
             if (!localMethods.ContainsKey(cmdReq.identifier))
             {
                 localMethods[cmdReq.identifier] = new Dictionary<string, Method>();
             }
             if (!localMethods[cmdReq.identifier].ContainsKey(ByteArrayToString(cmdReq.payload)))
             {
-                Console.Out.WriteLine("RegisterInvoke guid `{0}`, identifier `{1}`, node guid `{2}`", ByteArrayToString(cmdReq.payload), cmdReq.identifier, cmdReq.source_proxy_guid);
+                log.InfoFormat("RegisterInvoke guid `{0}`, identifier `{1}`, node guid `{2}`", ByteArrayToString(cmdReq.payload), cmdReq.identifier, cmdReq.source_proxy_guid);
                 localMethods[cmdReq.identifier][ByteArrayToString(cmdReq.payload)] = new Method
                 {
                     identifier = cmdReq.identifier,
@@ -293,9 +301,10 @@ namespace ESBServer
 
         void Response(Message msg)
         {
+            if (log.IsDebugEnabled) log.DebugFormat("Response()");
             if (!invokeResponses.ContainsKey(msg.guid_to))
             {
-                Console.Out.WriteLine("Response {0} not found in queue", msg.guid_to);
+                log.InfoFormat("Response {0} not found in queue", msg.guid_to);
                 return;
             }
             var resp = invokeResponses[msg.guid_to];
@@ -312,7 +321,8 @@ namespace ESBServer
 
         void Invoke(Message cmdReq)
         {
-            //Console.Out.WriteLine("Got Invoke from {0} - {1}", cmdReq.source_proxy_guid, cmdReq.identifier);
+            if (log.IsDebugEnabled) log.DebugFormat("Invoke()");
+            //log.InfoFormat("Got Invoke from {0} - {1}", cmdReq.source_proxy_guid, cmdReq.identifier);
             if (!localMethods.ContainsKey(cmdReq.identifier) || localMethods[cmdReq.identifier].Count < 1)
             {
                 var respMsg = new Message
@@ -345,6 +355,7 @@ namespace ESBServer
 
         void SendPing(string targetGuid)
         {
+            if (log.IsDebugEnabled) log.DebugFormat("SendPing()");
             publisher.Publish(targetGuid, new Message
             {
                 cmd = Message.Cmd.PING,
@@ -356,8 +367,12 @@ namespace ESBServer
 
         void RedisPing()
         {
-            registryRedis.ZAdd("ZSET:PROXIES", Unixtimestamp(), StringToByteArray(String.Format("{0}#{1}:{2}", guid, GetFQDN(), handshakeServer.port)));
+            if (log.IsDebugEnabled) log.DebugFormat("RedisPing()");
+            var me = String.Format("{0}#{1}:{2}", guid, GetFQDN(), handshakeServer.port);
+            if (log.IsDebugEnabled) log.DebugFormat("Add to redis: `{0}`", me);
+            registryRedis.ZAdd("ZSET:PROXIES", Unixtimestamp(), StringToByteArray(me));
             var rez = registryRedis.ZRange("ZSET:PROXIES", 0, -1);
+            if (log.IsDebugEnabled) log.DebugFormat("Entries in redis: {0}", rez.Length);
             if (rez.Length > 1) //1 this proxy
             {
                 for (var i = 0; i < rez.Length; i++)
@@ -382,7 +397,7 @@ namespace ESBServer
 
                     if (port == handshakeServer.port && GetFQDN() == host && guid != targetGuid)
                     {
-                        Console.Out.WriteLine("Found me in proxies, but with wrong guid, delete this entry");
+                        log.WarnFormat("Found me in proxies, but with wrong guid, delete this entry");
                         registryRedis.ZRem("ZSET:PROXIES", rez[i]);
                         continue;
                     }
@@ -398,7 +413,7 @@ namespace ESBServer
                     }
                     if (!found)
                     {
-                        Console.Out.WriteLine("found new proxy at tcp://{0}:{1}", host, port);
+                        log.InfoFormat("found new proxy at tcp://{0}:{1}", host, port);
 
                         if (!ConnectToProxy(host, port, targetGuid))
                         {
@@ -411,9 +426,10 @@ namespace ESBServer
 
         bool ConnectToProxy(string host, int port, string targetGuid)
         {
+            if (log.IsDebugEnabled) log.DebugFormat("ConnectToProxy({0}, {1}, {2})", host, port, targetGuid);
             try
             {
-                Console.Out.WriteLine("Connect to subscriber tcp://{0}:{1}", host, port-1);
+                log.InfoFormat("Connect to subscriber tcp://{0}:{1}", host, port-1);
                 var sub = new Subscriber(guid, targetGuid, host, port-1);
                 subscribers.Add(targetGuid, sub);
                 proxyGuids.Add(targetGuid);
@@ -425,13 +441,14 @@ namespace ESBServer
             }
             catch (Exception e)
             {
+                log.ErrorFormat("Connection to subscriber tcp://{0}:{1} failed", host, port - 1);
             }
             return false;
         }
 
         void Pong(Message cmdReq)
         {
-            //Console.Out.WriteLine("Got ping from {0}", cmdReq.source_proxy_guid);
+            log.DebugFormat("Got ping from {0}", cmdReq.source_proxy_guid);
             var respMsg = new Message
             {
                 cmd = Message.Cmd.PONG,
@@ -451,6 +468,8 @@ namespace ESBServer
                 fqdn = hostName + "." + domainName;
             else
                 fqdn = hostName;
+
+            log.DebugFormat("GetFQDN returns - `{0}`", fqdn);
 
             return fqdn;
         }

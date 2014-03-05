@@ -10,6 +10,7 @@ namespace ESBServer
 {
     public class Publisher
     {
+        private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         public int port { get; internal set; }
         public string host { get; internal set; }
         public string guid { get; internal set; }
@@ -26,7 +27,7 @@ namespace ESBServer
             ctx = ZmqContext.Create();
             socket = ctx.CreateSocket(SocketType.PUB);
             socket.Bind(String.Format("tcp://*:{0}", port));
-            Console.Out.WriteLine("Publisher successfuly binded on port {0}", port);
+            log.InfoFormat("Publisher successfuly binded on port {0}", port);
             socket.SendHighWatermark = 1000000;
             socket.SendBufferSize = 512 * 1024;
         }

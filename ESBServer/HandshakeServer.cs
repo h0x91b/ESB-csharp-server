@@ -12,6 +12,7 @@ namespace ESBServer
 {
     public class HandshakeServer
     {
+        private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         Socket server;
         public int port { get; internal set; }
         public int publisherPort { get; internal set; }
@@ -29,7 +30,7 @@ namespace ESBServer
             server = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             var ep = new IPEndPoint(IPAddress.Any, port);
             server.Bind(ep);
-            Console.Out.WriteLine("HanshakeServer succesfully binded on port {0}", port);
+            log.InfoFormat("HanshakeServer succesfully binded on port {0}", port);
             server.Listen(10);
         }
 
@@ -42,7 +43,7 @@ namespace ESBServer
 
             if (list.Count > 0)
             {
-                Console.Out.WriteLine("got connection");
+                log.DebugFormat("got connection");
                 var client = server.Accept();
                 client.Blocking = false;
                 client.ReceiveTimeout = 5000;
@@ -56,7 +57,7 @@ namespace ESBServer
             {
                 if (c.Poll(1, SelectMode.SelectError))
                 {
-                    Console.Out.WriteLine("Error on socket");
+                    log.ErrorFormat("Error on socket");
                     removeSocketList.Add(c);
                     continue;
                 }
@@ -65,12 +66,12 @@ namespace ESBServer
                 {
                     try
                     {
-                        Console.Out.WriteLine("Available for read {0} bytes", c.Available);
+                        log.DebugFormat("Available for read {0} bytes", c.Available);
                         int len = c.Receive(buf);
-                        Console.Out.WriteLine("Read {0} bytes", len);
+                        log.DebugFormat("Read {0} bytes", len);
                         var portStr = Encoding.ASCII.GetString(buf, 0, len);
                         var rEp = c.RemoteEndPoint as IPEndPoint;
-                        Console.Out.WriteLine("Remote addr: {0}", rEp.Address.ToString());
+                        log.InfoFormat("Node publisher IP is: {0}", rEp.Address.ToString());
 
                         var parameters = portStr.Split('#');
 
@@ -78,7 +79,7 @@ namespace ESBServer
                     }
                     catch (Exception e)
                     {
-                        Console.Out.WriteLine("Exception while reading from socket: {0}", e.ToString());
+                        log.ErrorFormat("Exception while reading from socket: {0}", e.ToString());
                     }
                 }
 
@@ -87,7 +88,7 @@ namespace ESBServer
                     try
                     {
                         var rEp = c.RemoteEndPoint as IPEndPoint;
-                        Console.Out.WriteLine("Available for write to {0}", rEp.Address.ToString());
+                        log.InfoFormat("Available for write to {0}", rEp.Address.ToString());
                         c.Send(Encoding.ASCII.GetBytes(String.Format("{0}", publisherPort)));
                         c.Shutdown(SocketShutdown.Both);
                         c.Close();
@@ -95,7 +96,7 @@ namespace ESBServer
                     }
                     catch (Exception e)
                     {
-                        Console.Out.WriteLine("Exception while writting to socket: {0}", e.ToString());
+                        log.InfoFormat("Exception while writting to socket: {0}", e.ToString());
                     }
                 }
             }
