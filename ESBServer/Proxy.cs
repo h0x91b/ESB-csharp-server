@@ -32,7 +32,25 @@ namespace ESBServer
 
             subscribeChannels = new Dictionary<string, int>();
             nodeSubscribeChannels = new Dictionary<string, List<string>>();
-            publisher = new Publisher(guid, GetFQDN(), 7001);
+            int publisherPort = 7001;
+            int handshakePort = 7002;
+            for (var i = 0; i < 10; i++)
+            {
+                try
+                {
+                    publisher = new Publisher(guid, GetFQDN(), publisherPort);
+                    break;
+                }
+                catch (Exception e)
+                {
+                    Console.Out.WriteLine("Bind on port {0} failed", publisherPort);
+                    publisherPort+=2;
+                    if (i == 10)
+                    {
+                        throw new Exception("Can not bind on ports 7001-7021");
+                    }
+                }
+            }
             localMethods = new Dictionary<string, Dictionary<string, Method>>();
             invokeResponses = new Dictionary<string, InvokeResponse>();
             
@@ -41,34 +59,51 @@ namespace ESBServer
             lastRedisUpdate = DateTime.Now.AddHours(-1);
             isWork = true;
 
-            handshakeServer = new HandshakeServer(7002, 7001, (ip, port, targetGuid) =>
+            for (var i = 0; i < 10; i++)
             {
-                Console.Out.WriteLine("New client requests my port from IP {0}, his port is {1}, guid: {2}", ip, port, targetGuid);
-
-                var connectString = String.Format("tcp://{0}:{1}", ip, port);
-                var toKill = new List<string>();
-                foreach (var s in subscribers)
+                try
                 {
-                    if (s.Value.connectionString == connectString)
+                    handshakeServer = new HandshakeServer(handshakePort, publisherPort, (ip, port, targetGuid) =>
                     {
-                        Console.Out.WriteLine("Kill subscriber {0} because he have a same connection string: {1}, probably old one is dead...", s.Key, connectString);
-                        toKill.Add(s.Key);
+                        Console.Out.WriteLine("New client requests my port from IP {0}, his port is {1}, guid: {2}", ip, port, targetGuid);
+
+                        var connectString = String.Format("tcp://{0}:{1}", ip, port);
+                        var toKill = new List<string>();
+                        foreach (var s in subscribers)
+                        {
+                            if (s.Value.connectionString == connectString)
+                            {
+                                Console.Out.WriteLine("Kill subscriber {0} because he have a same connection string: {1}, probably old one is dead...", s.Key, connectString);
+                                toKill.Add(s.Key);
+                            }
+                        }
+                        foreach (var g in toKill)
+                        {
+                            int totalRemovedMethods = KillSubscriber(g);
+                            Console.Out.WriteLine("removed {0} methods from registry", totalRemovedMethods);
+                        }
+
+                        var sub = new Subscriber(guid, targetGuid, String.Format("tcp://{0}:{1}", ip, port));
+                        foreach (var s in subscribeChannels)
+                        {
+                            sub.Subscribe(s.Key);
+                        }
+
+                        subscribers.Add(targetGuid, sub);
+                    });
+                    break;
+                }
+                catch (Exception e)
+                {
+                    Console.Out.WriteLine("Bind on port {0} failed", handshakePort);
+                    handshakePort += 2;
+                    if (i == 10)
+                    {
+                        throw new Exception("Can not bind on ports 7002-7022");
                     }
                 }
-                foreach (var g in toKill)
-                {
-                    int totalRemovedMethods = KillSubscriber(g);
-                    Console.Out.WriteLine("removed {0} methods from registry", totalRemovedMethods);
-                }
+            }
 
-                var sub = new Subscriber(guid, targetGuid, String.Format("tcp://{0}:{1}", ip, port));
-                foreach (var s in subscribeChannels)
-                {
-                    sub.Subscribe(s.Key);
-                }
-
-                subscribers.Add(targetGuid, sub);
-            });
             (new Thread(new ThreadStart(MainLoop))).Start();
         }
 

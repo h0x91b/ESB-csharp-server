@@ -29,6 +29,7 @@ namespace ESBServer
             server = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             var ep = new IPEndPoint(IPAddress.Any, port);
             server.Bind(ep);
+            Console.Out.WriteLine("HanshakeServer succesfully binded on port {0}", port);
             server.Listen(10);
         }
 

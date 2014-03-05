@@ -10,14 +10,14 @@ namespace ESBServer
 {
     public class Publisher
     {
-        public UInt16 port { get; internal set; }
+        public int port { get; internal set; }
         public string host { get; internal set; }
         public string guid { get; internal set; }
 
         ZmqContext ctx = null;
         ZmqSocket socket = null;
 
-        public Publisher(string _guid, string _host, UInt16 _port)
+        public Publisher(string _guid, string _host, int _port)
         {
             guid = _guid;
             host = _host;
@@ -26,6 +26,7 @@ namespace ESBServer
             ctx = ZmqContext.Create();
             socket = ctx.CreateSocket(SocketType.PUB);
             socket.Bind(String.Format("tcp://*:{0}", port));
+            Console.Out.WriteLine("Publisher successfuly binded on port {0}", port);
             socket.SendHighWatermark = 1000000;
             socket.SendBufferSize = 512 * 1024;
         }
