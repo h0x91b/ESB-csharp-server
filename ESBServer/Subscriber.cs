@@ -11,22 +11,27 @@ namespace ESBServer
     public class Subscriber : IDisposable
     {
         public string connectionString { get; internal set; }
+        public string host { get; internal set; }
+        public int port { get; internal set; }
         string guid;
-        string targetGuid;
+        public string targetGuid { get; internal set; }
 
         ZmqContext ctx = null;
         ZmqSocket socket = null;
         byte[] buf;
 
         public int lastActiveTime;
+        public int lastPingTime;
 
         public List<String> subscribeChannels;
 
-        public Subscriber(string _guid, string _targetGuid, string _connectionString)
+        public Subscriber(string _guid, string _targetGuid, string _host, int _port)
         {
             guid = _guid;
             targetGuid = _targetGuid;
-            connectionString = _connectionString;
+            host = _host;
+            port = _port;
+            connectionString = String.Format("tcp://{0}:{1}", host, port);
             buf = new byte[1024 * 1024];
             subscribeChannels = new List<string>();
 
@@ -39,7 +44,7 @@ namespace ESBServer
             socket.ReceiveBufferSize = 512 * 1024;
 
             lastActiveTime = Proxy.Unixtimestamp();
-            Console.Out.WriteLine("Connected");
+            Console.Out.WriteLine("Connected successfuly to: `{0}` `{1}`", connectionString, targetGuid);
         }
 
         public void Subscribe(string channel)

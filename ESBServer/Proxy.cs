@@ -21,6 +21,7 @@ namespace ESBServer
         Dictionary<string, InvokeResponse> invokeResponses; //cmdGuid, source_proxy_guid
         Dictionary<string, int> subscribeChannels; //channel, refs
         Dictionary<string, List<string>> nodeSubscribeChannels; //nodeGuid, list of channels
+        List<string> proxyGuids;
         DateTime lastRedisUpdate;
         RedisClient registryRedis = null;
         Random random;
@@ -32,25 +33,9 @@ namespace ESBServer
 
             subscribeChannels = new Dictionary<string, int>();
             nodeSubscribeChannels = new Dictionary<string, List<string>>();
+            proxyGuids = new List<string>();
             int publisherPort = 7001;
-            int handshakePort = 7002;
-            for (var i = 0; i < 10; i++)
-            {
-                try
-                {
-                    publisher = new Publisher(guid, GetFQDN(), publisherPort);
-                    break;
-                }
-                catch (Exception e)
-                {
-                    Console.Out.WriteLine("Bind on port {0} failed", publisherPort);
-                    publisherPort+=2;
-                    if (i == 10)
-                    {
-                        throw new Exception("Can not bind on ports 7001-7021");
-                    }
-                }
-            }
+            
             localMethods = new Dictionary<string, Dictionary<string, Method>>();
             invokeResponses = new Dictionary<string, InvokeResponse>();
             
@@ -63,7 +48,8 @@ namespace ESBServer
             {
                 try
                 {
-                    handshakeServer = new HandshakeServer(handshakePort, publisherPort, (ip, port, targetGuid) =>
+                    publisher = new Publisher(guid, GetFQDN(), publisherPort);
+                    handshakeServer = new HandshakeServer(publisherPort+1, publisherPort, (ip, port, targetGuid) =>
                     {
                         Console.Out.WriteLine("New client requests my port from IP {0}, his port is {1}, guid: {2}", ip, port, targetGuid);
 
@@ -83,7 +69,7 @@ namespace ESBServer
                             Console.Out.WriteLine("removed {0} methods from registry", totalRemovedMethods);
                         }
 
-                        var sub = new Subscriber(guid, targetGuid, String.Format("tcp://{0}:{1}", ip, port));
+                        var sub = new Subscriber(guid, targetGuid, ip, port);
                         foreach (var s in subscribeChannels)
                         {
                             sub.Subscribe(s.Key);
@@ -95,8 +81,8 @@ namespace ESBServer
                 }
                 catch (Exception e)
                 {
-                    Console.Out.WriteLine("Bind on port {0} failed", handshakePort);
-                    handshakePort += 2;
+                    Console.Out.WriteLine("Bind on port {0} failed: {1}", publisherPort, e.ToString());
+                    publisherPort += 2;
                     if (i == 10)
                     {
                         throw new Exception("Can not bind on ports 7002-7022");
@@ -117,19 +103,6 @@ namespace ESBServer
 
                     handshakeServer.Poll();
 
-                    //var msgReq = responder.Poll();
-                    //if (msgReq != null)
-                    //{
-                    //    nothingToDo = false;
-                    //    switch (msgReq.cmd)
-                    //    {
-                    //        case Message.Cmd.NODE_HELLO:
-                    //            NodeHello(msgReq); 
-                    //            break;
-                    //        default:
-                    //            throw new Exception("Unknown command");
-                    //    }
-                    //}
                     int time = Unixtimestamp();
                     var listOfDeadSubscribers = new List<string>();
                     foreach (var k in subscribers)
@@ -143,6 +116,8 @@ namespace ESBServer
                             {
                                 case Message.Cmd.PING:
                                     Pong(msg);
+                                    break;
+                                case Message.Cmd.PONG:
                                     break;
                                 case Message.Cmd.REGISTER_INVOKE:
                                     RegisterInvoke(msg);
@@ -164,6 +139,12 @@ namespace ESBServer
                                     Console.Out.WriteLine("Unknown command received, cmd payload: {0}", ByteArrayToString(msg.payload));
                                     throw new Exception("Unknown command received");
                             }
+                        }
+                        if (time - subscriber.lastPingTime > 1)
+                        {
+                            //Send ping
+                            subscriber.lastPingTime = Unixtimestamp();
+                            SendPing(subscriber.targetGuid);
                         }
                         if (time - subscriber.lastActiveTime > 5)
                         {
@@ -230,10 +211,17 @@ namespace ESBServer
             }
         }
 
-        int KillSubscriber(string guid)
+        int KillSubscriber(string targetGuid)
         {
-            var sub = subscribers[guid];
-            subscribers.Remove(guid);
+            var sub = subscribers[targetGuid];
+
+            if (proxyGuids.Contains(targetGuid))
+            {
+                registryRedis.ZRem("ZSET:PROXIES", StringToByteArray(String.Format("{0}#{1}:{2}", sub.targetGuid, sub.host, sub.port)));
+                proxyGuids.Remove(targetGuid);
+            }
+
+            subscribers.Remove(targetGuid);
             sub.Dispose();
 
             int totalRemoved = 0;
@@ -242,7 +230,7 @@ namespace ESBServer
                 var toRemove = new List<string>();
                 foreach (var m in d.Value)
                 {
-                    if (m.Value.proxyGuid == guid)
+                    if (m.Value.proxyGuid == targetGuid)
                     {
                         Console.Out.WriteLine("Remove method `{0}` with guid {1}", m.Value.identifier, m.Key);
                         toRemove.Add(m.Key);
@@ -255,9 +243,9 @@ namespace ESBServer
                 }
             }
 
-            if (nodeSubscribeChannels.ContainsKey(guid))
+            if (nodeSubscribeChannels.ContainsKey(targetGuid))
             {
-                foreach (var channel in nodeSubscribeChannels[guid])
+                foreach (var channel in nodeSubscribeChannels[targetGuid])
                 {
                     subscribeChannels[channel]--;
                     Console.Out.WriteLine("On channel {0} we have {1} refs", channel, subscribeChannels[channel]);
@@ -271,7 +259,8 @@ namespace ESBServer
                     }
                 }
             }
-            nodeSubscribeChannels.Remove(guid);
+            nodeSubscribeChannels.Remove(targetGuid);
+
             return totalRemoved;
         }
 
@@ -354,9 +343,90 @@ namespace ESBServer
             publisher.Publish(method.proxyGuid, msg);
         }
 
+        void SendPing(string targetGuid)
+        {
+            publisher.Publish(targetGuid, new Message
+            {
+                cmd = Message.Cmd.PING,
+                source_proxy_guid = guid,
+                guid_from = "",
+                payload = StringToByteArray("ping!")
+            });
+        }
+
         void RedisPing()
         {
-            registryRedis.ZAdd("ZSET:PROXIES", Unixtimestamp(), StringToByteArray(String.Format("{0}#{1}:{2}", guid, GetFQDN(), 7002)));
+            registryRedis.ZAdd("ZSET:PROXIES", Unixtimestamp(), StringToByteArray(String.Format("{0}#{1}:{2}", guid, GetFQDN(), handshakeServer.port)));
+            var rez = registryRedis.ZRange("ZSET:PROXIES", 0, -1);
+            if (rez.Length > 1) //1 this proxy
+            {
+                for (var i = 0; i < rez.Length; i++)
+                {
+                    var entry = ByteArrayToString(rez[i]);
+                    var tmp = entry.Split('#');
+                    var targetGuid = tmp[0];
+                    if (targetGuid == guid)
+                    {
+                        //found me in list...
+                        continue;
+                    }
+                    if (proxyGuids.Contains(targetGuid))
+                    {
+                        //connected already...
+                        continue;
+                    }
+                    var conStr = tmp[1];
+                    var tmp2 = conStr.Split(':');
+                    var host = tmp2[0];
+                    var port = Convert.ToInt32(tmp2[1]);
+
+                    if (port == handshakeServer.port && GetFQDN() == host && guid != targetGuid)
+                    {
+                        Console.Out.WriteLine("Found me in proxies, but with wrong guid, delete this entry");
+                        registryRedis.ZRem("ZSET:PROXIES", rez[i]);
+                        continue;
+                    }
+
+                    var found = false;
+                    foreach (var s in subscribers)
+                    {
+                        if (s.Value.targetGuid == targetGuid)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found)
+                    {
+                        Console.Out.WriteLine("found new proxy at tcp://{0}:{1}", host, port);
+
+                        if (!ConnectToProxy(host, port, targetGuid))
+                        {
+                            registryRedis.ZRem("ZSET:PROXIES", rez[i]);
+                        }
+                    }
+                }
+            }
+        }
+
+        bool ConnectToProxy(string host, int port, string targetGuid)
+        {
+            try
+            {
+                Console.Out.WriteLine("Connect to subscriber tcp://{0}:{1}", host, port-1);
+                var sub = new Subscriber(guid, targetGuid, host, port-1);
+                subscribers.Add(targetGuid, sub);
+                proxyGuids.Add(targetGuid);
+                foreach (var s in subscribeChannels)
+                {
+                    sub.Subscribe(s.Key);
+                }
+                return true;
+            }
+            catch (Exception e)
+            {
+            }
+            return false;
         }
 
         void Pong(Message cmdReq)
@@ -364,7 +434,7 @@ namespace ESBServer
             //Console.Out.WriteLine("Got ping from {0}", cmdReq.source_proxy_guid);
             var respMsg = new Message
             {
-                cmd = Message.Cmd.RESPONSE,
+                cmd = Message.Cmd.PONG,
                 payload = StringToByteArray("\"pong!\""), //this is JSON encoded string
                 source_proxy_guid = guid,
                 guid_to = cmdReq.guid_from
