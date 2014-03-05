@@ -217,7 +217,7 @@ namespace ESBServer
 
             if (proxyGuids.Contains(targetGuid))
             {
-                registryRedis.ZRem("ZSET:PROXIES", StringToByteArray(String.Format("{0}#{1}:{2}", sub.targetGuid, sub.host, sub.port)));
+                registryRedis.ZRem("ZSET:PROXIES", StringToByteArray(String.Format("{0}#{1}:{2}", sub.targetGuid, sub.host, sub.port+1)));
                 proxyGuids.Remove(targetGuid);
             }
 
