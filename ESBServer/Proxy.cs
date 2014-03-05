@@ -19,6 +19,8 @@ namespace ESBServer
         Dictionary<string, Subscriber> subscribers;
         Dictionary<string, Dictionary<string, Method>> localMethods; //key is identifier
         Dictionary<string, InvokeResponse> invokeResponses; //cmdGuid, source_proxy_guid
+        Dictionary<string, int> subscribeChannels; //channel, refs
+        Dictionary<string, List<string>> nodeSubscribeChannels; //nodeGuid, list of channels
         DateTime lastRedisUpdate;
         RedisClient registryRedis = null;
         Random random;
@@ -27,7 +29,9 @@ namespace ESBServer
             random = new Random(BitConverter.ToInt32(Guid.NewGuid().ToByteArray(), 0));
             guid = GenGuid();
             Console.Out.WriteLine("New ESBServer {0}", guid);
-            
+
+            subscribeChannels = new Dictionary<string, int>();
+            nodeSubscribeChannels = new Dictionary<string, List<string>>();
             publisher = new Publisher(guid, GetFQDN(), 7001);
             localMethods = new Dictionary<string, Dictionary<string, Method>>();
             invokeResponses = new Dictionary<string, InvokeResponse>();
@@ -58,6 +62,11 @@ namespace ESBServer
                 }
 
                 var sub = new Subscriber(guid, targetGuid, String.Format("tcp://{0}:{1}", ip, port));
+                foreach (var s in subscribeChannels)
+                {
+                    sub.Subscribe(s.Key);
+                }
+
                 subscribers.Add(targetGuid, sub);
             });
             (new Thread(new ThreadStart(MainLoop))).Start();
@@ -106,6 +115,12 @@ namespace ESBServer
                                 case Message.Cmd.INVOKE:
                                     Invoke(msg);
                                     break;
+                                case Message.Cmd.PUBLISH:
+                                    Publish(msg);
+                                    break;
+                                case Message.Cmd.SUBSCRIBE:
+                                    Subscribe(msg);
+                                    break;
                                 case Message.Cmd.RESPONSE:
                                 case Message.Cmd.ERROR_RESPONSE:
                                     Response(msg);
@@ -144,6 +159,42 @@ namespace ESBServer
             }
         }
 
+        void Publish(Message msg)
+        {
+            if (msg.recursion > 0) return;
+            Console.Out.WriteLine("publish... `{0}`", msg.identifier);
+            msg.source_proxy_guid = guid;
+            msg.recursion = 1;
+            publisher.Publish(msg.identifier, msg);
+        }
+
+        void Subscribe(Message msg)
+        {
+            if (!subscribeChannels.ContainsKey(msg.identifier))
+            {
+                subscribeChannels[msg.identifier] = 1;
+            }
+            else
+            {
+                subscribeChannels[msg.identifier]++;
+            }
+
+            if (!nodeSubscribeChannels.ContainsKey(msg.source_proxy_guid))
+            {
+                nodeSubscribeChannels[msg.source_proxy_guid] = new List<string>();
+            }
+            if (!nodeSubscribeChannels[msg.source_proxy_guid].Contains(msg.identifier))
+            {
+                nodeSubscribeChannels[msg.source_proxy_guid].Add(msg.identifier);
+            }
+            Console.Out.WriteLine("Subscribe... `{0}`, on this channel we have {1} subscribers", msg.identifier, subscribeChannels[msg.identifier]);
+            foreach (var v in subscribers)
+            {
+                var sub = v.Value;
+                sub.Subscribe(msg.identifier);
+            }
+        }
+
         int KillSubscriber(string guid)
         {
             var sub = subscribers[guid];
@@ -168,6 +219,24 @@ namespace ESBServer
                     totalRemoved++;
                 }
             }
+
+            if (nodeSubscribeChannels.ContainsKey(guid))
+            {
+                foreach (var channel in nodeSubscribeChannels[guid])
+                {
+                    subscribeChannels[channel]--;
+                    Console.Out.WriteLine("On channel {0} we have {1} refs", channel, subscribeChannels[channel]);
+                    if (subscribeChannels[channel] <= 0)
+                    {
+                        foreach (var s in subscribers)
+                        {
+                            var subs = s.Value;
+                            subs.Unsubscribe(channel);
+                        }
+                    }
+                }
+            }
+            nodeSubscribeChannels.Remove(guid);
             return totalRemoved;
         }
 

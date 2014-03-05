@@ -20,13 +20,15 @@ namespace ESBServer
 
         public int lastActiveTime;
 
+        public List<String> subscribeChannels;
+
         public Subscriber(string _guid, string _targetGuid, string _connectionString)
         {
             guid = _guid;
             targetGuid = _targetGuid;
             connectionString = _connectionString;
-
             buf = new byte[1024 * 1024];
+            subscribeChannels = new List<string>();
 
             ctx = ZmqContext.Create();
             socket = ctx.CreateSocket(SocketType.SUB);
@@ -38,6 +40,29 @@ namespace ESBServer
 
             lastActiveTime = Proxy.Unixtimestamp();
             Console.Out.WriteLine("Connected");
+        }
+
+        public void Subscribe(string channel)
+        {
+            if (subscribeChannels.Contains(channel))
+            {
+                Console.Out.WriteLine("Subscriber {0} already subscribed on `{1}`", targetGuid, channel);
+                return;
+            }
+            Console.Out.WriteLine("Subscriber {0} subscribe on `{1}`", targetGuid, channel);
+            subscribeChannels.Add(channel);
+            socket.Subscribe(Proxy.StringToByteArray(channel));
+        }
+
+        public void Unsubscribe(string channel)
+        {
+            if (!subscribeChannels.Contains(channel))
+            {
+                return;
+            }
+            Console.Out.WriteLine("Subscriber {0} unsubscribe on `{1}`", targetGuid, channel);
+            subscribeChannels.Remove(channel);
+            socket.Unsubscribe(Proxy.StringToByteArray(channel));
         }
 
         public void Dispose()
