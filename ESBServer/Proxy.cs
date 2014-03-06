@@ -7,10 +7,11 @@ using System.Threading;
 using ProtoBuf;
 using ServiceStack.Redis;
 using log4net;
+using System.ServiceProcess;
 
 namespace ESBServer
 {
-    public class Proxy
+    public class Proxy : ServiceBase
     {
         private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         bool isWork = false;
