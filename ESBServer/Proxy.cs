@@ -95,6 +95,12 @@ namespace ESBServer
             (new Thread(new ThreadStart(MainLoop))).Start();
         }
 
+        protected override void OnStop()
+        {
+            log.ErrorFormat("Got shutdown request!");
+            isWork = false;
+        }
+
         void MainLoop()
         {
             while (isWork)
