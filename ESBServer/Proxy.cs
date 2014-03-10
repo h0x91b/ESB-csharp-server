@@ -19,11 +19,13 @@ namespace ESBServer
         Publisher publisher;
         HandshakeServer handshakeServer;
         Dictionary<string, Subscriber> subscribers;
-        Dictionary<string, Dictionary<string, Method>> localMethods; //key is identifier
+        Dictionary<string, Dictionary<string, Method>> localMethods; //identifier, methodGuid, struct
+        Dictionary<string, Dictionary<string, Method>> remoteMethods; //identifier, methodGuid, struct
         Dictionary<string, InvokeResponse> invokeResponses; //cmdGuid, source_proxy_guid
         Dictionary<string, int> subscribeChannels; //channel, refs
         Dictionary<string, List<string>> nodeSubscribeChannels; //nodeGuid, list of channels
         List<string> proxyGuids;
+        Dictionary<string, DateTime> proxyRegistryExchange;
         DateTime lastRedisUpdate;
         RedisClient registryRedis = null;
         Random random;
@@ -35,10 +37,12 @@ namespace ESBServer
 
             subscribeChannels = new Dictionary<string, int>();
             nodeSubscribeChannels = new Dictionary<string, List<string>>();
+            proxyRegistryExchange = new Dictionary<string, DateTime>();
             proxyGuids = new List<string>();
             int publisherPort = 7001;
             
             localMethods = new Dictionary<string, Dictionary<string, Method>>();
+            remoteMethods = new Dictionary<string, Dictionary<string, Method>>();
             invokeResponses = new Dictionary<string, InvokeResponse>();
             
             subscribers = new Dictionary<string, Subscriber>();
@@ -112,6 +116,7 @@ namespace ESBServer
                     handshakeServer.Poll();
 
                     int time = Unixtimestamp();
+                    var date = DateTime.Now;
                     var listOfDeadSubscribers = new List<string>();
                     foreach (var k in subscribers)
                     {
@@ -144,6 +149,12 @@ namespace ESBServer
                                 case Message.Cmd.ERROR_RESPONSE:
                                     Response(msg);
                                     break;
+                                case Message.Cmd.REGISTRY_EXCHANGE_REQUEST:
+                                    SendMyRegistry(msg);
+                                    break;
+                                case Message.Cmd.REGISTRY_EXCHANGE_RESPONSE:
+                                    GotRemoteRegisty(msg);
+                                    break;
                                 default:
                                     log.ErrorFormat("Unknown command received, cmd payload: {0}", ByteArrayToString(msg.payload));
                                     throw new Exception("Unknown command received");
@@ -160,6 +171,20 @@ namespace ESBServer
                         {
                             //5 sec timeout
                             listOfDeadSubscribers.Add(k.Key);
+                        }
+                        else
+                        {
+                            if (proxyGuids.Contains(k.Key))
+                            {
+                                if (!proxyRegistryExchange.ContainsKey(k.Key))
+                                {
+                                    proxyRegistryExchange[k.Key] = DateTime.Now.AddMilliseconds(-3001);
+                                }
+                                if ((date - proxyRegistryExchange[k.Key]).TotalMilliseconds > 3000)
+                                {
+                                    RequestRegistryFromProxy(subscriber.targetGuid);
+                                }
+                            }
                         }
                     }
 
@@ -185,12 +210,88 @@ namespace ESBServer
             }
         }
 
+        void GotRemoteRegisty(Message msg)
+        {
+            var remoteMethodsCount = 0;
+            if (msg.reg_entry != null) remoteMethodsCount = msg.reg_entry.Count;
+            if (log.IsDebugEnabled) log.DebugFormat("Got remote registry from proxy {0} - {1} methods", msg.source_proxy_guid, remoteMethodsCount);
+            if (remoteMethodsCount < 1) return;
+
+            foreach (var m in msg.reg_entry)
+            {
+                if (!remoteMethods.ContainsKey(m.identifier))
+                    remoteMethods[m.identifier] = new Dictionary<string, Method>();
+                if (!remoteMethods[m.identifier].ContainsKey(m.method_guid))
+                {
+                    log.InfoFormat("Add new remote method with identifier `{0}`, guid `{1}` on proxy `{2}`", m.identifier, m.method_guid, m.proxy_guid);
+                    remoteMethods[m.identifier][m.method_guid] = new Method
+                    {
+                        isLocal = false,
+                        lastUpdate = DateTime.Now,
+                        identifier = m.identifier,
+                        methodGuid = m.method_guid,
+                        proxyGuid = m.proxy_guid,
+                        type = m.type
+                    };
+                }
+                else
+                {
+                    if(log.IsDebugEnabled) log.DebugFormat("Update lastUpdate for {0} {1} on proxy {2}", m.identifier, m.method_guid, m.proxy_guid);
+                    remoteMethods[m.identifier][m.method_guid].lastUpdate = DateTime.Now;
+                }
+            }
+        }
+
+        void SendMyRegistry(Message msgReq)
+        {
+            if (log.IsDebugEnabled) log.DebugFormat("Send my registry to proxy {0}", msgReq.source_proxy_guid);
+            var msg = new Message
+            {
+                cmd = Message.Cmd.REGISTRY_EXCHANGE_RESPONSE,
+                source_proxy_guid = guid,
+                payload = StringToByteArray("take it"),
+                reg_entry = new List<RegistryEntry>()
+            };
+            var methodCount = 0;
+            foreach (var d in localMethods)
+            {
+                foreach (var m in d.Value)
+                {
+                    if (log.IsDebugEnabled) log.DebugFormat("Add local invoke method {0} with guid {1}", d.Key, m.Key);
+                    msg.reg_entry.Add(new RegistryEntry
+                    {
+                        identifier = d.Key,
+                        method_guid = m.Key,
+                        proxy_guid = guid,
+                        type = RegistryEntry.RegistryEntryType.INVOKE_METHOD
+                    });
+                    methodCount++;
+                }
+            }
+            if (log.IsDebugEnabled) log.DebugFormat("send {0} local methods", methodCount);
+            publisher.Publish(msgReq.source_proxy_guid, msg);
+        }
+
+        void RequestRegistryFromProxy(string targetGuid)
+        {
+            if (log.IsDebugEnabled) log.DebugFormat("request registry exchange");
+            proxyRegistryExchange[targetGuid] = DateTime.Now;
+            var msg = new Message
+            {
+                cmd = Message.Cmd.REGISTRY_EXCHANGE_REQUEST,
+                source_proxy_guid = guid,
+                payload = StringToByteArray("please")
+            };
+
+            publisher.Publish(targetGuid, msg);
+        }
+
         void Publish(Message msg)
         {
             if (log.IsDebugEnabled) log.DebugFormat("Publish()");
-            if (msg.recursion > 0) return;
+            if (msg.recursion > 1) return;
             msg.source_proxy_guid = guid;
-            msg.recursion = 1;
+            msg.recursion = msg.recursion+1;
             publisher.Publish(msg.identifier, msg);
         }
 
@@ -246,7 +347,25 @@ namespace ESBServer
                 {
                     if (m.Value.proxyGuid == targetGuid)
                     {
-                        log.InfoFormat("Remove method `{0}` with guid {1}", m.Value.identifier, m.Key);
+                        log.InfoFormat("Remove local method `{0}` with guid {1}", m.Value.identifier, m.Key);
+                        toRemove.Add(m.Key);
+                    }
+                }
+                foreach (var k in toRemove)
+                {
+                    d.Value.Remove(k);
+                    totalRemoved++;
+                }
+            }
+
+            foreach (var d in remoteMethods)
+            {
+                var toRemove = new List<string>();
+                foreach (var m in d.Value)
+                {
+                    if (m.Value.proxyGuid == targetGuid)
+                    {
+                        log.InfoFormat("Remove remote method `{0}` with guid {1}", m.Value.identifier, m.Key);
                         toRemove.Add(m.Key);
                     }
                 }
@@ -292,8 +411,15 @@ namespace ESBServer
                 {
                     identifier = cmdReq.identifier,
                     methodGuid = ByteArrayToString(cmdReq.payload),
-                    proxyGuid = cmdReq.source_proxy_guid
+                    proxyGuid = cmdReq.source_proxy_guid,
+                    isLocal = true,
+                    type = RegistryEntry.RegistryEntryType.INVOKE_METHOD,
+                    lastUpdate = DateTime.Now
                 };
+            }
+            else
+            {
+                localMethods[cmdReq.identifier][ByteArrayToString(cmdReq.payload)].lastUpdate = DateTime.Now;
             }
 
             var respMsg = new Message
@@ -332,14 +458,37 @@ namespace ESBServer
             //log.InfoFormat("Got Invoke from {0} - {1}", cmdReq.source_proxy_guid, cmdReq.identifier);
             if (!localMethods.ContainsKey(cmdReq.identifier) || localMethods[cmdReq.identifier].Count < 1)
             {
-                var respMsg = new Message
+                if (!remoteMethods.ContainsKey(cmdReq.identifier) || remoteMethods[cmdReq.identifier].Count < 1)
                 {
-                    cmd = Message.Cmd.ERROR,
-                    payload = StringToByteArray(String.Format("Invoke method \"{0}\" not found", cmdReq.identifier)),
-                    source_proxy_guid = guid,
-                    guid_to = cmdReq.guid_from
+                    var respMsg = new Message
+                    {
+                        cmd = Message.Cmd.ERROR,
+                        payload = StringToByteArray(String.Format("Invoke method \"{0}\" not found", cmdReq.identifier)),
+                        source_proxy_guid = guid,
+                        guid_to = cmdReq.guid_from
+                    };
+                    publisher.Publish(cmdReq.source_proxy_guid, respMsg);
+                    return;
+                }
+                //remote method call
+
+                var remoteMethod = RandomValueFromDictionary<string, Method>(remoteMethods[cmdReq.identifier]).First();
+                invokeResponses[cmdReq.guid_from] = new InvokeResponse
+                {
+                    expireDate = (DateTime.Now.AddSeconds(30)),
+                    sourceGuid = cmdReq.source_proxy_guid
                 };
-                publisher.Publish(cmdReq.source_proxy_guid, respMsg);
+
+                var remoteMsg = new Message
+                {
+                    cmd = Message.Cmd.INVOKE,
+                    source_proxy_guid = guid,
+                    guid_to = remoteMethod.methodGuid,
+                    guid_from = cmdReq.guid_from,
+                    payload = cmdReq.payload,
+                    identifier = cmdReq.identifier
+                };
+                publisher.Publish(remoteMethod.proxyGuid, remoteMsg);
                 return;
             }
             var method = RandomValueFromDictionary<string, Method>(localMethods[cmdReq.identifier]).First();
@@ -356,6 +505,7 @@ namespace ESBServer
                 guid_to = method.methodGuid,
                 guid_from = cmdReq.guid_from,
                 payload = cmdReq.payload,
+                identifier = cmdReq.identifier
             };
             publisher.Publish(method.proxyGuid, msg);
         }
@@ -536,6 +686,9 @@ namespace ESBServer
         public string identifier;
         public string methodGuid;
         public string proxyGuid;
+        public bool isLocal;
+        public RegistryEntry.RegistryEntryType type;
+        public DateTime lastUpdate;
     }
 
 
