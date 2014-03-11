@@ -38,7 +38,7 @@ namespace ESBServer
 
             ctx = ZmqContext.Create();
             socket = ctx.CreateSocket(SocketType.SUB);
-            log.InfoFormat("Subscriber connecting to: `{0}`", connectionString);
+            if (log.IsDebugEnabled) log.DebugFormat("Subscriber connecting to: `{0}`", connectionString);
             socket.Subscribe(Proxy.StringToByteArray(guid));
             socket.Connect(connectionString);
             socket.ReceiveHighWatermark = 1000000;
@@ -52,21 +52,21 @@ namespace ESBServer
         {
             if (subscribeChannels.Contains(channel))
             {
-                log.InfoFormat("Subscriber {0} already subscribed on `{1}`", targetGuid, channel);
+                if(log.IsDebugEnabled) log.DebugFormat("{0} Already subscribed on `{1}`", targetGuid, channel);
                 return;
             }
-            log.InfoFormat("Subscriber {0} subscribe on `{1}`", targetGuid, channel);
+            if (log.IsDebugEnabled) log.DebugFormat("{0} Subscribe on `{1}`", targetGuid, channel);
             subscribeChannels.Add(channel);
             socket.Subscribe(Proxy.StringToByteArray(channel));
         }
 
         public void Unsubscribe(string channel)
         {
-            if (!subscribeChannels.Contains(channel))
-            {
-                return;
-            }
-            log.InfoFormat("Subscriber {0} unsubscribe on `{1}`", targetGuid, channel);
+            //if (!subscribeChannels.Contains(channel))
+            //{
+            //    return;
+            //}
+            if (log.IsDebugEnabled) log.DebugFormat("{0} Unsubscribe on `{1}`", targetGuid, channel);
             subscribeChannels.Remove(channel);
             socket.Unsubscribe(Proxy.StringToByteArray(channel));
         }

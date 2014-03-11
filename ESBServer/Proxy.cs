@@ -27,6 +27,7 @@ namespace ESBServer
         List<string> proxyGuids;
         Dictionary<string, DateTime> proxyRegistryExchange;
         DateTime lastRedisUpdate;
+        DateTime lastReport;
         RedisClient registryRedis = null;
         Random random;
         public Proxy()
@@ -49,6 +50,7 @@ namespace ESBServer
             registryRedis = new RedisClient("esb-redis", 6379);
             lastRedisUpdate = DateTime.Now.AddHours(-1);
             isWork = true;
+            lastReport = DateTime.Now;
 
             for (var i = 0; i < 10; i++)
             {
@@ -199,6 +201,18 @@ namespace ESBServer
                         lastRedisUpdate = DateTime.Now;
                         RedisPing();
                     }
+
+                    if ((DateTime.Now - date).TotalMilliseconds > 10)
+                    {
+                        log.WarnFormat("Main loop cycle taked {0}ms!", (DateTime.Now - date).TotalMilliseconds);
+                    }
+
+                    if ((DateTime.Now - lastReport).TotalSeconds > 30)
+                    {
+                        lastReport = DateTime.Now;
+                        ReportStats();
+                    }
+
                     if(nothingToDo)
                         Thread.Sleep(1);
                 }
@@ -298,26 +312,28 @@ namespace ESBServer
         void Subscribe(Message msg)
         {
             if (log.IsDebugEnabled) log.DebugFormat("Subscribe()");
-            if (!subscribeChannels.ContainsKey(msg.identifier))
-            {
-                subscribeChannels[msg.identifier] = 1;
-            }
-            else
-            {
-                subscribeChannels[msg.identifier]++;
-            }
 
             if (!nodeSubscribeChannels.ContainsKey(msg.source_proxy_guid))
             {
                 nodeSubscribeChannels[msg.source_proxy_guid] = new List<string>();
             }
 
+            if (!subscribeChannels.ContainsKey(msg.identifier))
+            {
+                subscribeChannels[msg.identifier] = 1;
+            }
+            else
+            {
+                if (!nodeSubscribeChannels[msg.source_proxy_guid].Contains(msg.identifier))
+                    subscribeChannels[msg.identifier]++;
+            }
+
             if (!nodeSubscribeChannels[msg.source_proxy_guid].Contains(msg.identifier))
             {
                 nodeSubscribeChannels[msg.source_proxy_guid].Add(msg.identifier);
+                log.InfoFormat("Subscribe... `{0}`, on this channel we have {1} subscribers", msg.identifier, subscribeChannels[msg.identifier]);
             }
 
-            log.InfoFormat("Subscribe... `{0}`, on this channel we have {1} subscribers", msg.identifier, subscribeChannels[msg.identifier]);
             foreach (var v in subscribers)
             {
                 var sub = v.Value;
@@ -381,7 +397,7 @@ namespace ESBServer
                 foreach (var channel in nodeSubscribeChannels[targetGuid])
                 {
                     subscribeChannels[channel]--;
-                    log.InfoFormat("On channel {0} we have {1} refs", channel, subscribeChannels[channel]);
+                    log.InfoFormat("On channel `{0}` we have {1} refs", channel, subscribeChannels[channel]);
                     if (subscribeChannels[channel] <= 0)
                     {
                         foreach (var s in subscribers)
@@ -395,6 +411,33 @@ namespace ESBServer
             nodeSubscribeChannels.Remove(targetGuid);
 
             return totalRemoved;
+        }
+
+        void ReportStats()
+        {
+            log.InfoFormat("ESB have a following:");
+            foreach (var i in localMethods)
+            {
+                foreach (var m in i.Value)
+                {
+                    log.InfoFormat("Local Invoke method `{0}` - Method guid: `{1}`, Proxy guid: `{2}`", i.Key, m.Value.methodGuid, m.Value.proxyGuid);
+                }
+            }
+
+            foreach (var i in remoteMethods)
+            {
+                foreach (var m in i.Value)
+                {
+                    log.InfoFormat("Remote Invoke method `{0}` - Method guid: `{1}`, Proxy guid: `{2}`", i.Key, m.Value.methodGuid, m.Value.proxyGuid);
+                }
+            }
+
+            log.InfoFormat("ESB have subscribers for:");
+
+            foreach (var c in subscribeChannels)
+            {
+                log.InfoFormat("On channel `{0}` ESB have {1} refs", c.Key, c.Value);
+            }
         }
 
         void RegisterInvoke(Message cmdReq)

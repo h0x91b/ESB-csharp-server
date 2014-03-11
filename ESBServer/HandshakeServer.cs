@@ -43,7 +43,7 @@ namespace ESBServer
 
             if (list.Count > 0)
             {
-                log.DebugFormat("got connection");
+                if (log.IsDebugEnabled) log.DebugFormat("got connection");
                 var client = server.Accept();
                 client.Blocking = false;
                 client.ReceiveTimeout = 5000;
@@ -66,14 +66,14 @@ namespace ESBServer
                 {
                     try
                     {
-                        log.DebugFormat("Available for read {0} bytes", c.Available);
+                        if (log.IsDebugEnabled) log.DebugFormat("Available for read {0} bytes", c.Available);
                         int len = c.Receive(buf);
-                        log.DebugFormat("Read {0} bytes", len);
+                        if (log.IsDebugEnabled) log.DebugFormat("Read {0} bytes", len);
                         var portStr = Encoding.ASCII.GetString(buf, 0, len);
                         var rEp = c.RemoteEndPoint as IPEndPoint;
-                        log.InfoFormat("Node publisher IP is: {0}", rEp.Address.ToString());
 
                         var parameters = portStr.Split('#');
+                        log.InfoFormat("Node publisher is: tcp:{0}:{1}", rEp.Address.ToString(), Convert.ToInt32(parameters[0]));
 
                         cb(rEp.Address.ToString(), Convert.ToInt32(parameters[0]), parameters[1]);
                     }
@@ -88,7 +88,7 @@ namespace ESBServer
                     try
                     {
                         var rEp = c.RemoteEndPoint as IPEndPoint;
-                        log.InfoFormat("Available for write to {0}", rEp.Address.ToString());
+                        if (log.IsDebugEnabled) log.DebugFormat("Available for write to {0}", rEp.Address.ToString());
                         c.Send(Encoding.ASCII.GetBytes(String.Format("{0}", publisherPort)));
                         c.Shutdown(SocketShutdown.Both);
                         c.Close();
