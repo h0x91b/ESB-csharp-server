@@ -8,6 +8,7 @@ using ProtoBuf;
 using ServiceStack.Redis;
 using log4net;
 using System.ServiceProcess;
+using StatsdClient;
 
 namespace ESBServer
 {
@@ -30,11 +31,18 @@ namespace ESBServer
         DateTime lastReport;
         RedisClient registryRedis = null;
         Random random;
+        StatsdUDP statsdUdp;
+        Statsd statsD;
         public Proxy()
         {
             random = new Random(BitConverter.ToInt32(Guid.NewGuid().ToByteArray(), 0));
             guid = GenGuid();
             log.InfoFormat("New ESBServer {0}", guid);
+            statsdUdp = new StatsdUDP("ams-node-ops01.frxfarm.local", 8125);
+            statsD = new Statsd(statsdUdp);
+
+            statsD.Send<Statsd.Counting>("esb.start-server", 1); //counter had one hit
+            
 
             subscribeChannels = new Dictionary<string, int>();
             nodeSubscribeChannels = new Dictionary<string, List<string>>();
@@ -202,10 +210,12 @@ namespace ESBServer
                         RedisPing();
                     }
 
-                    if ((DateTime.Now - date).TotalMilliseconds > 10)
+                    var dt = (int)(DateTime.Now - date).TotalMilliseconds;
+                    if (dt > 10)
                     {
-                        log.WarnFormat("Main loop cycle taked {0}ms!", (DateTime.Now - date).TotalMilliseconds);
+                        log.WarnFormat("Main loop cycle taked {0}ms!", dt);
                     }
+                    statsD.Send<Statsd.Timing>("main-loop-cycle-time", dt, 1.0/1000.0);
 
                     if ((DateTime.Now - lastReport).TotalSeconds > 30)
                     {
@@ -219,6 +229,7 @@ namespace ESBServer
                 catch (Exception e)
                 {
                     log.ErrorFormat("Exception in MainLoop: {0}", e.ToString());
+                    statsD.Send<Statsd.Counting>("esb.MainLoopErrors", 1);
                     Thread.Sleep(10);
                 }
             }
@@ -304,6 +315,8 @@ namespace ESBServer
         {
             if (log.IsDebugEnabled) log.DebugFormat("Publish()");
             if (msg.recursion > 1) return;
+            statsD.Send<Statsd.Counting>("esb.publishes", 1, 1.0 / 250.0);
+            statsD.Send<Statsd.Counting>(String.Format("esb.publish.{0}", msg.identifier), 1, 1.0/50.0); //counter had one hit
             msg.source_proxy_guid = guid;
             msg.recursion = msg.recursion+1;
             publisher.Publish(msg.identifier, msg);
@@ -312,6 +325,7 @@ namespace ESBServer
         void Subscribe(Message msg)
         {
             if (log.IsDebugEnabled) log.DebugFormat("Subscribe()");
+            statsD.Send<Statsd.Counting>("esb.subscribes", 1, 1.0/10.0);
 
             if (!nodeSubscribeChannels.ContainsKey(msg.source_proxy_guid))
             {
@@ -332,6 +346,7 @@ namespace ESBServer
             {
                 nodeSubscribeChannels[msg.source_proxy_guid].Add(msg.identifier);
                 log.InfoFormat("Subscribe... `{0}`, on this channel we have {1} subscribers", msg.identifier, subscribeChannels[msg.identifier]);
+                statsD.Send<Statsd.Counting>(String.Format("esb.subscribe.{0}", msg.identifier), 1);
             }
 
             foreach (var v in subscribers)
@@ -344,6 +359,7 @@ namespace ESBServer
         int KillSubscriber(string targetGuid)
         {
             if (log.IsDebugEnabled) log.DebugFormat("KillSubscriber()");
+            statsD.Send<Statsd.Counting>("esb.kill-subscriber", 1);
             var sub = subscribers[targetGuid];
 
             if (proxyGuids.Contains(targetGuid))
@@ -443,6 +459,7 @@ namespace ESBServer
         void RegisterInvoke(Message cmdReq)
         {
             if (log.IsDebugEnabled) log.DebugFormat("RegisterInvoke()");
+            statsD.Send<Statsd.Counting>("esb.register-invoke", 1);
             if (!localMethods.ContainsKey(cmdReq.identifier))
             {
                 localMethods[cmdReq.identifier] = new Dictionary<string, Method>();
@@ -498,6 +515,8 @@ namespace ESBServer
         void Invoke(Message cmdReq)
         {
             if (log.IsDebugEnabled) log.DebugFormat("Invoke()");
+            statsD.Send<Statsd.Counting>("esb.invokes", 1, 1.0/100.0); //counter had one hit
+            statsD.Send<Statsd.Counting>(String.Format("esb.invoke.{0}", cmdReq.identifier), 1, 1.0/10.0); //counter had one hit
             //log.InfoFormat("Got Invoke from {0} - {1}", cmdReq.source_proxy_guid, cmdReq.identifier);
             if (!localMethods.ContainsKey(cmdReq.identifier) || localMethods[cmdReq.identifier].Count < 1)
             {
@@ -511,6 +530,8 @@ namespace ESBServer
                         guid_to = cmdReq.guid_from
                     };
                     publisher.Publish(cmdReq.source_proxy_guid, respMsg);
+                    statsD.Send<Statsd.Counting>(String.Format("esb.invoke-notfounds", cmdReq.identifier), 1); //counter had one hit
+                    statsD.Send<Statsd.Counting>(String.Format("esb.invoke-notfound.{0}", cmdReq.identifier), 1); //counter had one hit
                     return;
                 }
                 //remote method call
@@ -627,6 +648,7 @@ namespace ESBServer
         bool ConnectToProxy(string host, int port, string targetGuid)
         {
             if (log.IsDebugEnabled) log.DebugFormat("ConnectToProxy({0}, {1}, {2})", host, port, targetGuid);
+            statsD.Send<Statsd.Counting>("esb.connect-to-proxy", 1);
             try
             {
                 log.InfoFormat("Connect to subscriber tcp://{0}:{1}", host, port-1);
@@ -657,6 +679,7 @@ namespace ESBServer
                 guid_to = cmdReq.guid_from
             };
             publisher.Publish(cmdReq.source_proxy_guid, respMsg);
+            statsD.Send<Statsd.Counting>("esb.pong", 1, 1.0 / 30.0);
         }
 
         public static string GetFQDN()
@@ -678,6 +701,7 @@ namespace ESBServer
         {
             //var g = Guid.NewGuid();
             //return g.ToString().Replace("-", string.Empty).ToUpper().Substring(0, 16);
+            if (statsD != null) statsD.Send<Statsd.Counting>("esb.gen-guid", 1, 1.0 / 100.0);
             var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
             var stringChars = new char[16];
 
