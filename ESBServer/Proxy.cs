@@ -55,7 +55,7 @@ namespace ESBServer
             invokeResponses = new Dictionary<string, InvokeResponse>();
             
             subscribers = new Dictionary<string, Subscriber>();
-            registryRedis = new RedisClient("esb-redis", 6379);
+            registryRedis = new RedisClient("plt-esbredis01", 6379);
             lastRedisUpdate = DateTime.Now.AddHours(-1);
             isWork = true;
             lastReport = DateTime.Now;
