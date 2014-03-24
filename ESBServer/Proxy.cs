@@ -288,6 +288,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                                     break;
                                 case Message.Cmd.RESPONSE:
                                 case Message.Cmd.ERROR_RESPONSE:
+                                case Message.Cmd.ERROR:
                                     Response(msg);
                                     break;
                                 case Message.Cmd.REGISTRY_EXCHANGE_REQUEST:
@@ -319,6 +320,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                             if (log.IsDebugEnabled) log.DebugFormat("Send Ping to subscriber {0}", subscriber.targetGuid);
                             subscriber.lastPingTime = Unixtimestamp();
                             SendPing(subscriber.targetGuid);
+                            ClearDeadRemoteMethods();
                         }
                         if (time - subscriber.lastActiveTime > 5)
                         {
@@ -509,6 +511,30 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                 {
                     if (log.IsDebugEnabled) log.DebugFormat("Update lastUpdate for {0} {1} on proxy {2}", m.identifier, m.method_guid, m.proxy_guid);
                     remoteMethods[m.identifier][m.method_guid].lastUpdate = DateTime.Now;
+                }
+            }
+        }
+
+        void ClearDeadRemoteMethods()
+        {
+            if (log.IsDebugEnabled) log.DebugFormat("ClearDeadRemoteMethods");
+            var toRemove = new Dictionary<string, string>();
+            foreach (var i in remoteMethods)
+            {
+                foreach (var m in remoteMethods[i.Key])
+                {
+                    if ((DateTime.Now - m.Value.lastUpdate).TotalMilliseconds > 5000)
+                    {
+                        log.InfoFormat("Found dead remote method `{0}` on proxy `{1}`", i.Key, m.Key);
+                        toRemove[i.Key] = m.Key;
+                    }
+                }
+            }
+            if (toRemove.Count > 0)
+            {
+                foreach (var k in toRemove)
+                {
+                    remoteMethods[k.Key].Remove(k.Value);
                 }
             }
         }

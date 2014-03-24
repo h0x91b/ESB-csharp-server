@@ -42,7 +42,7 @@ namespace ESBServer
             socket.Subscribe(Proxy.StringToByteArray(guid));
             socket.Connect(connectionString);
             socket.ReceiveHighWatermark = 1000000;
-            socket.ReceiveBufferSize = 512 * 1024;
+            socket.ReceiveBufferSize = 128 * 1024;
 
             lastActiveTime = Proxy.Unixtimestamp();
             log.InfoFormat("Connected successfuly to: `{0}` `{1}`", connectionString, targetGuid);

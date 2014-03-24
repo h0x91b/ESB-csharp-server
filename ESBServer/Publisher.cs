@@ -29,7 +29,7 @@ namespace ESBServer
             socket.Bind(String.Format("tcp://*:{0}", port));
             log.InfoFormat("Publisher successfuly binded on port {0}", port);
             socket.SendHighWatermark = 1000000;
-            socket.SendBufferSize = 512 * 1024;
+            socket.SendBufferSize = 128 * 1024;
         }
 
         public void Publish(string channel, Message msg)
