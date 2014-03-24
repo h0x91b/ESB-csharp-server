@@ -9,6 +9,7 @@ using Microsoft.Win32.SafeHandles;
 using System.Runtime.InteropServices;
 using System.IO;
 using System.Configuration;
+using ZeroMQ;
 
 [assembly: log4net.Config.XmlConfigurator(ConfigFile = "Log4Net.config", Watch = true)]
 
@@ -29,6 +30,30 @@ namespace ESBServer
 
         public static bool RunAsService = true;
 
+        public class ProxyContainer : ServiceBase
+        {
+            List<Proxy> proxies;
+            public ProxyContainer()
+            {
+                var cpus = Environment.ProcessorCount;
+                var ctx = ZmqContext.Create();
+                proxies = new List<Proxy>();
+                for (var i = 0; i < cpus; i++)
+                {
+                    proxies.Add(new Proxy(ctx));
+                    Thread.Sleep(1000 / cpus);
+                }
+            }
+
+            protected override void OnStop()
+            {
+                foreach (var p in proxies)
+                {
+                    p.Stop();
+                }
+            }
+        }
+
         static void Main(string[] args)
         {
             RunAsService = bool.Parse(ConfigurationManager.AppSettings["RunAsService"].ToString());
@@ -46,7 +71,7 @@ namespace ESBServer
                 Directory.SetCurrentDirectory(strPath);
 
                 ServiceBase[] ServicesToRun;
-                ServicesToRun = new ServiceBase[] { new Proxy() };
+                ServicesToRun = new ServiceBase[] { new ProxyContainer() };
 
                 ServiceBase.Run(ServicesToRun);
             }
@@ -63,7 +88,13 @@ namespace ESBServer
 
                 log.InfoFormat("Running as Command Line");
 
-                new Proxy();
+                var cpus = Environment.ProcessorCount;
+                var ctx = ZmqContext.Create();
+                for (var i = 0; i < cpus; i++)
+                {
+                    new Proxy(ctx);
+                    Thread.Sleep(1000 / cpus);
+                }
                 while (true)
                 {
                     Thread.Sleep(1000);

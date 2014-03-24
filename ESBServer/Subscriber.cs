@@ -18,6 +18,7 @@ namespace ESBServer
         public string targetGuid { get; internal set; }
 
         ZmqContext ctx = null;
+        bool shardedCtx;
         ZmqSocket socket = null;
         byte[] buf;
 
@@ -26,17 +27,29 @@ namespace ESBServer
 
         public List<String> subscribeChannels;
 
-        public Subscriber(string _guid, string _targetGuid, string _host, int _port)
+        public Subscriber(string _guid, string _targetGuid, string _host, int _port, ZmqContext _ctx)
         {
             guid = _guid;
             targetGuid = _targetGuid;
             host = _host;
             port = _port;
-            connectionString = String.Format("tcp://{0}:{1}", host, port);
+            if (port > 0) 
+                connectionString = String.Format("tcp://{0}:{1}", host, port);
+            else
+                connectionString = String.Format("inproc://{0}", targetGuid.ToLower());
             buf = new byte[1024 * 1024];
             subscribeChannels = new List<string>();
 
-            ctx = ZmqContext.Create();
+            if (_ctx == null)
+            {
+                shardedCtx = false;
+                ctx = ZmqContext.Create();
+            }
+            else
+            {
+                shardedCtx = true;
+                ctx = _ctx;
+            }
             socket = ctx.CreateSocket(SocketType.SUB);
             if (log.IsDebugEnabled) log.DebugFormat("Subscriber connecting to: `{0}`", connectionString);
             socket.Subscribe(Proxy.StringToByteArray(guid));
@@ -75,7 +88,7 @@ namespace ESBServer
         {
             log.InfoFormat("The end of life for subscriber `{0}` `{1}`", connectionString, targetGuid);
             socket.Close();
-            ctx.Terminate();
+            if(!shardedCtx) ctx.Terminate();
         }
 
         public Message Poll()
@@ -86,13 +99,21 @@ namespace ESBServer
             {
                 return null;
             }
-            var start = Array.IndexOf(buf, (byte)9);
-            if (start == -1) throw new Exception("Can not find the Delimiter \\t");
-            lastActiveTime = Proxy.Unixtimestamp();
-            start++;
-            MemoryStream stream = new MemoryStream(buf, start, size - start, false);
-            var respMsg = Serializer.Deserialize<Message>(stream);
-            return respMsg;
+            try
+            {
+                var start = Array.IndexOf(buf, (byte)9);
+                if (start == -1) throw new Exception("Can not find the Delimiter \\t");
+                lastActiveTime = Proxy.Unixtimestamp();
+                start++;
+                MemoryStream stream = new MemoryStream(buf, start, size - start, false);
+                var respMsg = Serializer.Deserialize<Message>(stream);
+                return respMsg;
+            }
+            catch (Exception e)
+            {
+                log.ErrorFormat("Error while decoding message from subscriber Poll {0}", e);
+                return null;
+            }
         }
     }
 }

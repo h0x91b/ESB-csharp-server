@@ -15,19 +15,27 @@ namespace ESBServer
         public string host { get; internal set; }
         public string guid { get; internal set; }
 
-        ZmqContext ctx = null;
+        public ZmqContext ctx { get; internal set; }
         ZmqSocket socket = null;
 
-        public Publisher(string _guid, string _host, int _port)
+        public Publisher(string _guid, string _host, int _port, ZmqContext _ctx)
         {
             guid = _guid;
             host = _host;
             port = _port;
 
-            ctx = ZmqContext.Create();
+            if (_ctx == null)
+                ctx = ZmqContext.Create();
+            else
+                ctx = _ctx;
             socket = ctx.CreateSocket(SocketType.PUB);
-            socket.Bind(String.Format("tcp://*:{0}", port));
-            log.InfoFormat("Publisher successfuly binded on port {0}", port);
+            var bindString = String.Empty;
+            if(port > 0)
+                bindString = String.Format("tcp://*:{0}", port);
+            else
+                bindString = String.Format("inproc://{0}", guid.ToLower());
+            socket.Bind(bindString);
+            log.InfoFormat("Publisher successfuly binded on {0}", bindString);
             socket.SendHighWatermark = 1000000;
             socket.SendBufferSize = 128 * 1024;
         }

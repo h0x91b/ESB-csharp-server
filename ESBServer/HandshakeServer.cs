@@ -36,74 +36,81 @@ namespace ESBServer
 
         public void Poll()
         {
-            var list = new ArrayList();
-            list.Add(server);
-
-            Socket.Select(list, null, null, 1);
-
-            if (list.Count > 0)
+            try
             {
-                if (log.IsDebugEnabled) log.DebugFormat("got connection");
-                var client = server.Accept();
-                client.Blocking = false;
-                client.ReceiveTimeout = 5000;
-                client.SendTimeout = 5000;
-                connectedClients.Add(client);
-            }
+                var list = new ArrayList();
+                list.Add(server);
 
-            var removeSocketList = new List<Socket>();
+                Socket.Select(list, null, null, 1);
 
-            foreach (var c in connectedClients)
-            {
-                if (c.Poll(1, SelectMode.SelectError))
+                if (list.Count > 0)
                 {
-                    log.ErrorFormat("Error on socket");
-                    removeSocketList.Add(c);
-                    continue;
+                    if (log.IsDebugEnabled) log.DebugFormat("got connection");
+                    var client = server.Accept();
+                    client.Blocking = false;
+                    client.ReceiveTimeout = 5000;
+                    client.SendTimeout = 5000;
+                    connectedClients.Add(client);
                 }
 
-                if (c.Poll(1, SelectMode.SelectRead) && c.Available > 0)
+                var removeSocketList = new List<Socket>();
+
+                foreach (var c in connectedClients)
                 {
-                    try
+                    if (c.Poll(1, SelectMode.SelectError))
                     {
-                        if (log.IsDebugEnabled) log.DebugFormat("Available for read {0} bytes", c.Available);
-                        int len = c.Receive(buf);
-                        if (log.IsDebugEnabled) log.DebugFormat("Read {0} bytes", len);
-                        var portStr = Encoding.ASCII.GetString(buf, 0, len);
-                        var rEp = c.RemoteEndPoint as IPEndPoint;
-
-                        var parameters = portStr.Split('#');
-                        log.InfoFormat("Node publisher is: tcp:{0}:{1}", rEp.Address.ToString(), Convert.ToInt32(parameters[0]));
-
-                        cb(rEp.Address.ToString(), Convert.ToInt32(parameters[0]), parameters[1]);
-                    }
-                    catch (Exception e)
-                    {
-                        log.ErrorFormat("Exception while reading from socket: {0}", e.ToString());
-                    }
-                }
-
-                if (c.Poll(1, SelectMode.SelectWrite))
-                {
-                    try
-                    {
-                        var rEp = c.RemoteEndPoint as IPEndPoint;
-                        if (log.IsDebugEnabled) log.DebugFormat("Available for write to {0}", rEp.Address.ToString());
-                        c.Send(Encoding.ASCII.GetBytes(String.Format("{0}", publisherPort)));
-                        c.Shutdown(SocketShutdown.Both);
-                        c.Close();
+                        log.ErrorFormat("Error on socket");
                         removeSocketList.Add(c);
+                        continue;
                     }
-                    catch (Exception e)
+
+                    if (c.Poll(1, SelectMode.SelectRead) && c.Available > 0)
                     {
-                        log.InfoFormat("Exception while writting to socket: {0}", e.ToString());
+                        try
+                        {
+                            if (log.IsDebugEnabled) log.DebugFormat("Available for read {0} bytes", c.Available);
+                            int len = c.Receive(buf);
+                            if (log.IsDebugEnabled) log.DebugFormat("Read {0} bytes", len);
+                            var portStr = Encoding.ASCII.GetString(buf, 0, len);
+                            var rEp = c.RemoteEndPoint as IPEndPoint;
+
+                            var parameters = portStr.Split('#');
+                            log.InfoFormat("Node publisher is: tcp:{0}:{1}", rEp.Address.ToString(), Convert.ToInt32(parameters[0]));
+
+                            cb(rEp.Address.ToString(), Convert.ToInt32(parameters[0]), parameters[1]);
+                        }
+                        catch (Exception e)
+                        {
+                            log.ErrorFormat("Exception while reading from socket: {0}", e.ToString());
+                        }
+                    }
+
+                    if (c.Poll(1, SelectMode.SelectWrite))
+                    {
+                        try
+                        {
+                            var rEp = c.RemoteEndPoint as IPEndPoint;
+                            if (log.IsDebugEnabled) log.DebugFormat("Available for write to {0}", rEp.Address.ToString());
+                            c.Send(Encoding.ASCII.GetBytes(String.Format("{0}", publisherPort)));
+                            c.Shutdown(SocketShutdown.Both);
+                            c.Close();
+                            removeSocketList.Add(c);
+                        }
+                        catch (Exception e)
+                        {
+                            log.InfoFormat("Exception while writting to socket: {0}", e.ToString());
+                        }
                     }
                 }
-            }
 
-            foreach (var c in removeSocketList)
+                foreach (var c in removeSocketList)
+                {
+                    connectedClients.Remove(c);
+                }
+            }
+            catch (Exception e)
             {
-                connectedClients.Remove(c);
+                log.ErrorFormat("Exception on Poll {0}", e);
             }
         }
     }

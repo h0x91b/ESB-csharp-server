@@ -11,6 +11,7 @@ using System.ServiceProcess;
 using StatsdClient;
 using System.IO;
 using System.Configuration;
+using ZeroMQ;
 
 namespace ESBServer
 {
@@ -22,10 +23,11 @@ namespace ESBServer
 
     public class Proxy : ServiceBase
     {
-        private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+        //private static readonly log4net.ILog log = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         bool isWork = false;
         string guid;
-        Publisher publisher;
+        Publisher regularPublisher;
+        Publisher inprocPublisher;
         HandshakeServer handshakeServer;
         Dictionary<string, Subscriber> subscribers;
         Dictionary<string, Dictionary<string, Method>> localMethods; //identifier, methodGuid, struct
@@ -44,11 +46,16 @@ namespace ESBServer
         Statsd statsD;
         Dictionary<string, luaRedis> luaScripts;
         List<string> channelsWithQueues;
+        List<string> inprocProxies;
+        private ILog log;
 
-        public Proxy()
+        public Proxy(ZmqContext ctx)
         {
             random = new Random(BitConverter.ToInt32(Guid.NewGuid().ToByteArray(), 0));
             guid = GenGuid();
+
+            log = log4net.LogManager.GetLogger(String.Format("ESBProxy[{0}]", guid));
+
             log.InfoFormat("New ESBServer {0}", guid);
             statsdUdp = new StatsdUDP("ams-node-ops01.frxfarm.local", 8125);
             statsD = new Statsd(statsdUdp);
@@ -60,6 +67,7 @@ namespace ESBServer
             nodeSubscribeChannels = new Dictionary<string, List<string>>();
             proxyRegistryExchange = new Dictionary<string, DateTime>();
             proxyGuids = new List<string>();
+            inprocProxies = new List<string>();
             int publisherPort = 7001;
 
             localMethods = new Dictionary<string, Dictionary<string, Method>>();
@@ -195,7 +203,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
             {
                 try
                 {
-                    publisher = new Publisher(guid, GetFQDN(), publisherPort);
+                    regularPublisher = new Publisher(guid, GetFQDN(), publisherPort, null);
                     handshakeServer = new HandshakeServer(publisherPort + 1, publisherPort, (ip, port, targetGuid) =>
                     {
                         log.InfoFormat("New client requests my port from IP {0}, his port is {1}, guid: {2}", ip, port, targetGuid);
@@ -216,7 +224,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                             log.InfoFormat("removed {0} methods from registry", totalRemovedMethods);
                         }
 
-                        var sub = new Subscriber(guid, targetGuid, ip, port);
+                        var sub = new Subscriber(guid, targetGuid, ip, port, null);
                         foreach (var s in subscribeChannels)
                         {
                             sub.Subscribe(s.Key);
@@ -224,6 +232,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
 
                         subscribers.Add(targetGuid, sub);
                     });
+                    inprocPublisher = new Publisher(guid, GetFQDN(), 0, ctx);
                     break;
                 }
                 catch (Exception e)
@@ -357,7 +366,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                     }
 
                     var dt = (int)(DateTime.Now - date).TotalMilliseconds;
-                    if (dt > 10)
+                    if (dt > 50)
                     {
                         log.WarnFormat("Main loop cycle taked {0}ms!", dt);
                     }
@@ -419,6 +428,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
             var timeout_ms = payload[1];
             Encoding encoding = new UTF8Encoding();
             byte[] input = encoding.GetBytes(msg.identifier);
+            var publisher = inprocProxies.Contains(msg.source_component_guid) ? inprocPublisher : regularPublisher;
             using (MemoryStream stream = new MemoryStream(input))
             {
                 int redisIndex = Math.Abs(MurMurHash3.Hash(stream)) % queueRedises.Count;
@@ -566,6 +576,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                 }
             }
             if (log.IsDebugEnabled) log.DebugFormat("send {0} local methods", methodCount);
+            var publisher = inprocProxies.Contains(msgReq.source_component_guid) ? inprocPublisher : regularPublisher;
             publisher.Publish(msgReq.source_component_guid, msg);
         }
 
@@ -580,6 +591,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                 payload = StringToByteArray("please")
             };
 
+            var publisher = inprocProxies.Contains(targetGuid) ? inprocPublisher : regularPublisher;
             publisher.Publish(targetGuid, msg);
         }
 
@@ -604,7 +616,8 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
             statsD.Send<Statsd.Counting>(String.Format("esb.publish.{0}", msg.identifier), 1, 1.0 / 50.0); //counter had one hit
             msg.source_component_guid = guid;
             msg.recursion = msg.recursion + 1;
-            publisher.Publish(msg.identifier, msg);
+            regularPublisher.Publish(msg.identifier, msg);
+            inprocPublisher.Publish(msg.identifier, msg);
         }
 
         void Subscribe(Message msg)
@@ -651,6 +664,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
             {
                 registryRedis.ZRem("ZSET:PROXIES", StringToByteArray(String.Format("{0}#{1}:{2}", sub.targetGuid, sub.host, sub.port + 1)));
                 proxyGuids.Remove(targetGuid);
+                inprocProxies.Remove(targetGuid);
             }
 
             subscribers.Remove(targetGuid);
@@ -774,6 +788,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                 source_component_guid = guid,
                 target_operation_guid = cmdReq.source_operation_guid
             };
+            var publisher = inprocProxies.Contains(cmdReq.source_component_guid) ? inprocPublisher : regularPublisher;
             publisher.Publish(cmdReq.source_component_guid, respMsg);
         }
 
@@ -793,6 +808,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                 source_component_guid = guid,
                 target_operation_guid = msg.target_operation_guid
             };
+            var publisher = inprocProxies.Contains(resp.sourceGuid) ? inprocPublisher : regularPublisher;
             publisher.Publish(resp.sourceGuid, respMsg);
             invokeResponses.Remove(msg.target_operation_guid);
         }
@@ -814,7 +830,8 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                         source_component_guid = guid,
                         target_operation_guid = cmdReq.source_operation_guid
                     };
-                    publisher.Publish(cmdReq.source_component_guid, respMsg);
+
+                    (inprocProxies.Contains(cmdReq.source_component_guid) ? inprocPublisher : regularPublisher).Publish(cmdReq.source_component_guid, respMsg);
                     statsD.Send<Statsd.Counting>(String.Format("esb.invoke-notfounds", cmdReq.identifier), 1); //counter had one hit
                     statsD.Send<Statsd.Counting>(String.Format("esb.invoke-notfound.{0}", cmdReq.identifier), 1); //counter had one hit
                     return;
@@ -837,7 +854,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                     payload = cmdReq.payload,
                     identifier = cmdReq.identifier
                 };
-                publisher.Publish(remoteMethod.proxyGuid, remoteMsg);
+                (inprocProxies.Contains(remoteMethod.proxyGuid) ? inprocPublisher : regularPublisher).Publish(remoteMethod.proxyGuid, remoteMsg);
                 return;
             }
             var method = RandomValueFromDictionary<string, Method>(localMethods[cmdReq.identifier]).First();
@@ -857,12 +874,13 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                 payload = cmdReq.payload,
                 identifier = cmdReq.identifier
             };
-            publisher.Publish(method.proxyGuid, msg);
+            (inprocProxies.Contains(method.proxyGuid) ? inprocPublisher : regularPublisher).Publish(method.proxyGuid, msg);
         }
 
         void SendPing(string targetGuid)
         {
             if (log.IsDebugEnabled) log.DebugFormat("SendPing()");
+            var publisher = inprocProxies.Contains(targetGuid) ? inprocPublisher : regularPublisher;
             publisher.Publish(targetGuid, new Message
             {
                 cmd = Message.Cmd.PING,
@@ -958,7 +976,15 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
             try
             {
                 log.InfoFormat("Connect to subscriber tcp://{0}:{1}", host, port - 1);
-                var sub = new Subscriber(guid, targetGuid, host, port - 1);
+                Subscriber sub;
+                if (host.ToLower() == GetFQDN().ToLower())
+                {
+                    log.InfoFormat("found inproc proxy, connect over inproc tranport...");
+                    sub = new Subscriber(guid, targetGuid, host, 0, inprocPublisher.ctx);
+                    if(!inprocProxies.Contains(targetGuid)) inprocProxies.Add(targetGuid);
+                }
+                else 
+                    sub = new Subscriber(guid, targetGuid, host, port - 1, null);
                 subscribers.Add(targetGuid, sub);
                 proxyGuids.Add(targetGuid);
                 foreach (var s in subscribeChannels)
@@ -984,6 +1010,7 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                 source_component_guid = guid,
                 target_operation_guid = cmdReq.source_operation_guid
             };
+            var publisher = inprocProxies.Contains(cmdReq.source_component_guid) ? inprocPublisher : regularPublisher;
             publisher.Publish(cmdReq.source_component_guid, respMsg);
             statsD.Send<Statsd.Counting>("esb.pong", 1, 1.0 / 30.0);
         }
@@ -997,8 +1024,6 @@ redis.call('DEL', 'KV:QUEUE:' .. channelName .. ':' .. queueName .. ':' .. id)
                 fqdn = hostName + "." + domainName;
             else
                 fqdn = hostName;
-
-            log.DebugFormat("GetFQDN returns - `{0}`", fqdn);
 
             return fqdn;
         }
